@@ -112,7 +112,12 @@ sub connect {
 sub reconnect {
     my $self = shift;
 
-    if ($self->txn_manager->in_transaction) {
+    # if it got here during a call in reconnect(), then it's a recursion
+    return () if $self->{teng_in_reconnect};
+
+    local $self->{teng_in_reconnect} = 1;
+    my $txn_manager = $self->{txn_manager};
+    if ($txn_manager && $txn_manager->in_transaction) {
         Carp::confess("Detected disconnected database during a transaction. Refusing to proceed");
     }
 
@@ -143,12 +148,16 @@ sub dbh {
     if ( $self->owner_pid != $$ ) {
         $self->owner_pid($$);
         $self->{dbh}->{InactiveDestroy} = 1;
-        $self->reconnect;
+        if (!  $self->reconnect ) {
+            return ();
+        }
         return $self->{dbh};
     }
 
     unless ($self->{dbh} && $self->{dbh}->FETCH('Active') && $self->{dbh}->ping) {
-        $self->reconnect;
+        if ( ! $self->reconnect ) {
+            return ();
+        }
     }
 
     $self->{dbh};
@@ -275,7 +284,15 @@ sub delete {
 # for transaction
 sub txn_manager  {
     my $self = shift;
-    $self->{txn_manager} ||= DBIx::TransactionManager->new($self->dbh);
+    my $txn_manager = $self->{txn_manager};
+    if (! $txn_manager) {
+        my $dbh = $self->dbh;
+        if (! $dbh) {
+            Carp::croak("No database handle available");
+        }
+        $txn_manager = $self->{txn_manager} = DBIx::TransactionManager->new($dbh);
+    }
+    return $txn_manager;
 }
 
 sub txn_scope    { $_[0]->txn_manager->txn_scope    }
